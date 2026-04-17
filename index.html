@@ -10,7 +10,7 @@
   
   <!-- 引入 React 核心 -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-  <script src="https://unpkg.com-react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
   
   <!-- 引入 Babel 負責在瀏覽器中編譯 JSX 語法 -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -61,7 +61,6 @@
     const LogOutIcon = (props) => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>;
     const XIcon = (props) => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
     const AwardIcon = (props) => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/></svg>;
-    const UserIcon = (props) => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
 
     // --- Components ---
 
@@ -133,8 +132,8 @@
       const [isLoading, setIsLoading] = useState(true);
       const [firebaseError, setFirebaseError] = useState('');
       
-      const [view, setView] = useState('loading'); // loading, entry, dashboard, admin
-      const [entryMode, setEntryMode] = useState('signup'); // signup, login
+      const [view, setView] = useState('loading');
+      const [entryMode, setEntryMode] = useState('signup');
       
       const [setupName, setSetupName] = useState('');
       const [setupPassword, setSetupPassword] = useState('');
@@ -153,13 +152,10 @@
         if (profile) setMyScoreInput(profile.score?.toString() || '0');
       }, [profile?.score]);
 
-      // 初始化 Firebase 與 檢查本地儲存
       useEffect(() => {
         const init = async () => {
           try {
             await auth.signInAnonymously();
-            
-            // 嘗試自動登入
             const saved = localStorage.getItem(STORAGE_KEY);
             if (saved) {
               const { name, password } = JSON.parse(saved);
@@ -171,12 +167,10 @@
           }
         };
         init();
-
         const unsubscribe = auth.onAuthStateChanged(user => setAuthUser(user));
         return () => unsubscribe();
       }, []);
 
-      // 監聽所有使用者數據
       useEffect(() => {
         if (!authUser) return;
         const unsubscribe = db.collection('event_users').onSnapshot((snapshot) => {
@@ -184,6 +178,15 @@
           snapshot.forEach(doc => usersList.push({ id: doc.id, ...doc.data() }));
           usersList.sort((a, b) => b.points - a.points);
           setAllUsers(usersList);
+          
+          // 如果已經在本地登入過了，同步最新的 profile
+          const saved = localStorage.getItem(STORAGE_KEY);
+          if (saved) {
+            const { name, password } = JSON.parse(saved);
+            const found = usersList.find(u => u.name === name && u.password === password);
+            if (found) setProfile(found);
+          }
+          
           setIsLoading(false);
         }, (error) => {
           setFirebaseError(error.message);
@@ -192,7 +195,6 @@
         return () => unsubscribe();
       }, [authUser]);
 
-      // 決定目前視圖
       useEffect(() => {
         if (firebaseError) setView('error');
         else if (isLoading) setView('loading');
@@ -201,7 +203,6 @@
         else setView('dashboard');
       }, [isLoading, profile, isAdmin, firebaseError]);
 
-      // 處理登入/註冊邏輯
       const handleEntry = async () => {
         const name = setupName.trim();
         const pwd = setupPassword.trim();
@@ -230,7 +231,6 @@
             localStorage.setItem(STORAGE_KEY, JSON.stringify({ name, password: pwd }));
           } catch (e) { setSetupError(e.message); setIsLoading(false); }
         } else {
-          // 登入模式：尋找匹配的使用者
           const found = allUsers.find(u => u.name === name && u.password === pwd);
           if (found) {
             setProfile(found);
@@ -256,10 +256,6 @@
             points: newPoints, 
             score: newScore 
           });
-          // 如果剛好改到自己，更新本地 profile
-          if (profile && userId === profile.id) {
-            setProfile({ ...profile, name: newName, points: newPoints, score: newScore });
-          }
         } catch (e) { console.error(e); }
       };
 
@@ -268,7 +264,6 @@
         let score = Math.min(Math.max(Number(myScoreInput), 0), MAX_POINTS);
         try {
           await db.collection('event_users').doc(profile.id).update({ score });
-          setProfile({ ...profile, score });
         } catch (e) { console.error(e); }
         setIsUpdatingMyScore(false);
       };
@@ -359,4 +354,104 @@
                   <div className="flex items-center space-x-2 bg-indigo-50 px-3 py-1 rounded-full">
                     <span className="text-xl">{profile.avatar}</span>
                     <span className="font-medium text-indigo-900 text-sm hidden sm:block">{profile.name}</span>
-                    <button onClick={handleLogout} title="登出並換帳號" className="p-1 text-gray-400 hover:text-red-500"><LogOutIcon className="w-4 h-4"
+                    <button onClick={handleLogout} title="登出並換帳號" className="p-1 text-gray-400 hover:text-red-500"><LogOutIcon className="w-4 h-4" /></button>
+                  </div>
+                )}
+                <button onClick={() => isAdmin ? setIsAdmin(false) : setShowAdminModal(true)} className="p-2 text-gray-400 hover:text-indigo-600">
+                  {isAdmin ? <LogOutIcon className="w-5 h-5" /> : <SettingsIcon className="w-5 h-5" />}
+                </button>
+              </div>
+            </div>
+          </nav>
+
+          <main className="max-w-4xl mx-auto px-4 py-8">
+            {view === 'dashboard' && (
+              <div className="space-y-6">
+                <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl p-6 text-white shadow-lg">
+                  <div className="flex items-center space-x-4 mb-6">
+                    <div className="text-5xl">{profile.avatar}</div>
+                    <div>
+                      <h2 className="text-2xl font-bold">{profile.name}</h2>
+                      <p className="text-indigo-100">繼續加油！累積集點與戰績吧！</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-white/10 p-4 rounded-xl backdrop-blur-sm">
+                      <p className="text-sm mb-2">我的集點</p>
+                      <PointVisualizer points={profile.points} />
+                    </div>
+                    <div className="bg-white/10 p-4 rounded-xl backdrop-blur-sm">
+                      <p className="text-sm mb-2">我的戰績</p>
+                      <div className="flex items-center space-x-2">
+                        <input type="number" value={myScoreInput} onChange={(e) => setMyScoreInput(e.target.value)} className="w-full bg-white text-gray-800 rounded px-2 py-1 font-bold" />
+                        <button onClick={handleUpdateMyScore} disabled={isUpdatingMyScore} className="bg-indigo-700 px-2 py-1 rounded text-xs">{isUpdatingMyScore ? '...' : '更新'}</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                  <div className="px-6 py-4 border-b bg-gray-50 flex items-center justify-between">
+                    <h3 className="font-bold flex items-center"><AwardIcon className="w-5 h-5 text-indigo-500 mr-2" />排行榜</h3>
+                    <span className="text-xs text-gray-400">🐾 蓋印章代表任務點數</span>
+                  </div>
+                  <div className="p-6 space-y-6">
+                    {allUsers.map((user, idx) => {
+                      const highest = Math.max(...allUsers.map(u => u.score || 0), 10);
+                      const width = Math.min(((user.score || 0) / highest) * 100, 100);
+                      const isMe = profile?.id === user.id;
+                      return (
+                        <div key={user.id} className={`flex items-center ${isMe ? 'ring-2 ring-indigo-500 ring-offset-4 rounded-lg p-2' : ''}`}>
+                          <div className="w-8 font-bold text-gray-300">{idx + 1}</div>
+                          <div className="flex-1">
+                            <div className="flex justify-between items-end mb-1">
+                              <span className="font-medium text-gray-700">{user.avatar} {user.name}</span>
+                              <PointVisualizer points={user.points} />
+                            </div>
+                            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-indigo-400 rounded-full transition-all duration-700" style={{ width: `${width}%` }}></div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {view === 'admin' && (
+              <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                <div className="p-6 bg-indigo-50 border-b font-bold text-indigo-900 flex justify-between">
+                  <span>管理員控制台</span>
+                  <span>總參與人數: {allUsers.length}</span>
+                </div>
+                <div className="divide-y">
+                  {allUsers.map(user => <AdminUserRow key={user.id} user={user} onUpdate={handleUpdateData} />)}
+                </div>
+              </div>
+            )}
+          </main>
+
+          {showAdminModal && (
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6">
+                <div className="flex justify-between mb-4">
+                  <h3 className="font-bold">管理員登入</h3>
+                  <button onClick={() => setShowAdminModal(false)}><XIcon className="w-5 h-5 text-gray-400" /></button>
+                </div>
+                <input type="password" value={adminPwdInput} onChange={(e) => setAdminPwdInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()} className="w-full px-4 py-2 border rounded-lg mb-4" placeholder="輸入管理密碼" autoFocus />
+                {adminError && <p className="text-red-500 text-sm mb-4">{adminError}</p>}
+                <button onClick={handleAdminLogin} className="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold">登入後台</button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
