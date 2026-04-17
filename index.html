@@ -26,7 +26,7 @@
 
   <!-- 應用程式邏輯 -->
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useRef } = React;
 
     // ==========================================
     // ⚠️ 請在這裡填入你專屬的 Firebase 設定！
@@ -49,11 +49,10 @@
     const db = firebase.firestore();
 
     // --- Constants ---
-    // 已新增：大象、寶寶、葉子、樹木、花朵
     const AVATARS = ['🐶', '🐱', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐘', '👶', '🌿', '🌳', '🌸', '🐮', '🐷'];
     const MAX_POINTS = 9999;
     const ADMIN_PASSWORD = 'admin123';
-    const STORAGE_KEY = 'event_user_login';
+    const STORAGE_KEY = 'event_user_session_v2'; // 更新金鑰版本以重置舊數據
 
     // --- 圖示元件 (SVG) ---
     const TrophyIcon = (props) => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>;
@@ -85,6 +84,13 @@
       const [editPoints, setEditPoints] = useState(user.points || 0);
       const [editScore, setEditScore] = useState(user.score || 0);
       const [isSaving, setIsSaving] = useState(false);
+
+      // 當外部數據變動時，同步更新編輯狀態 (重要：修復後台資料顯示不一致)
+      useEffect(() => {
+        setEditName(user.name);
+        setEditPoints(user.points);
+        setEditScore(user.score || 0);
+      }, [user]);
 
       const handleSave = async () => {
         setIsSaving(true);
@@ -158,47 +164,48 @@
         if (profile) setMyScoreInput(profile.score?.toString() || '0');
       }, [profile?.score]);
 
+      // 初始化 Firebase 並嘗試恢復會話
       useEffect(() => {
         const init = async () => {
           try {
-            await auth.signInAnonymously();
-            const saved = localStorage.getItem(STORAGE_KEY);
-            if (saved) {
-              try {
-                const { name, password } = JSON.parse(saved);
-                setSetupName(name);
-                setSetupPassword(password);
-              } catch(e) { console.error("Invalid local session"); }
-            }
+            const userCredential = await auth.signInAnonymously();
+            setAuthUser(userCredential.user);
           } catch (error) {
             setFirebaseError(error.message);
             setIsLoading(false);
           }
         };
         init();
-        const unsubscribe = auth.onAuthStateChanged(user => {
-          setAuthUser(user);
-          if (!user) setIsLoading(false);
-        });
-        return () => unsubscribe();
       }, []);
 
+      // 數據同步與登入狀態檢查 (改進版：使用 UID 綁定)
       useEffect(() => {
         if (!authUser) return;
+
         const unsubscribe = db.collection('event_users').onSnapshot((snapshot) => {
           const usersList = [];
           snapshot.forEach(doc => usersList.push({ id: doc.id, ...doc.data() }));
           usersList.sort((a, b) => b.points - a.points);
           setAllUsers(usersList);
           
-          const saved = localStorage.getItem(STORAGE_KEY);
-          if (saved) {
-            try {
-              const { name, password } = JSON.parse(saved);
-              const found = usersList.find(u => u.name === name && u.password === password);
-              if (found) setProfile(found);
-              else setProfile(null);
-            } catch(e) {}
+          // 邏輯修正：優先檢查當前 Auth 的 UID 是否已經有存檔
+          const dbProfile = usersList.find(u => u.id === authUser.uid);
+          
+          if (dbProfile) {
+            setProfile(dbProfile);
+          } else {
+            // 如果沒找到，才去看 localStorage 的紀錄
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+              try {
+                const { name, password } = JSON.parse(saved);
+                const found = usersList.find(u => u.name === name && u.password === password);
+                if (found) setProfile(found);
+                else setProfile(null);
+              } catch(e) { setProfile(null); }
+            } else {
+              setProfile(null);
+            }
           }
           setIsLoading(false);
         }, (error) => {
@@ -225,7 +232,8 @@
         }
 
         if (entryMode === 'signup') {
-          if (allUsers.some(u => u.name.toLowerCase() === name.toLowerCase())) {
+          // 修復版重複檢查：如果名字一樣但 ID 不同才算重複
+          if (allUsers.some(u => u.name.toLowerCase() === name.toLowerCase() && u.id !== authUser.uid)) {
             setSetupError('這個暱稱已經有人用過囉，換一個吧！');
             return;
           }
@@ -240,10 +248,10 @@
               createdAt: Date.now()
             };
             await db.collection('event_users').doc(authUser.uid).set(userData);
-            setProfile({ id: authUser.uid, ...userData });
             localStorage.setItem(STORAGE_KEY, JSON.stringify({ name, password: pwd }));
           } catch (e) { setSetupError(e.message); setIsLoading(false); }
         } else {
+          // 登入模式
           const found = allUsers.find(u => u.name === name && u.password === pwd);
           if (found) {
             setProfile(found);
@@ -266,8 +274,8 @@
         try {
           await db.collection('event_users').doc(userId).update({ 
             name: newName, 
-            points: newPoints, 
-            score: newScore 
+            points: Number(newPoints), 
+            score: Number(newScore) 
           });
         } catch (e) { console.error(e); }
       };
@@ -300,20 +308,18 @@
       };
 
       if (view === 'error') return (
-        <div className="min-h-screen bg-red-50 flex flex-col items-center justify-center p-4">
-          <ShieldAlertIcon className="w-16 h-16 text-red-500 mb-4" />
-          <h1 className="text-2xl font-bold text-red-800 mb-2">資料庫連接錯誤</h1>
-          <p className="text-red-600 text-center max-w-md">{firebaseError}</p>
-          <button onClick={() => window.location.reload()} className="mt-6 px-4 py-2 bg-red-600 text-white rounded-lg">重試連線</button>
+        <div className="min-h-screen bg-red-50 flex flex-col items-center justify-center p-4 text-center">
+          <ShieldAlertIcon className="w-16 h-16 text-red-500 mb-4 mx-auto" />
+          <h1 className="text-2xl font-bold text-red-800 mb-2">資料庫連線中斷</h1>
+          <p className="text-red-600 max-w-md mx-auto">{firebaseError}</p>
+          <button onClick={() => window.location.reload()} className="mt-6 px-6 py-2 bg-red-600 text-white rounded-xl shadow-lg hover:bg-red-700 transition-all">重試連線</button>
         </div>
       );
 
       if (view === 'loading') return (
-        <div className="min-h-screen bg-indigo-50 flex items-center justify-center">
-          <div className="flex flex-col items-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-4 border-indigo-500 border-t-transparent mb-4"></div>
-            <p className="text-indigo-600 font-medium">連線中，請稍候...</p>
-          </div>
+        <div className="min-h-screen bg-indigo-50 flex flex-col items-center justify-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-4 border-indigo-500 border-t-transparent mb-4"></div>
+          <p className="text-indigo-600 font-medium">資料同步中，請稍候...</p>
         </div>
       );
 
@@ -325,7 +331,7 @@
               <h1 className="text-2xl font-bold text-gray-800">
                 {entryMode === 'signup' ? '歡迎加入任務挑戰！' : '歡迎回來！'}
               </h1>
-              <p className="text-gray-500 mt-2">請登入或建立您的參與帳號</p>
+              <p className="text-gray-500 mt-2">請設定您的帳號資料</p>
             </div>
 
             <div className="space-y-4">
@@ -352,9 +358,9 @@
                 <input type="password" value={setupPassword} onChange={(e) => { setSetupPassword(e.target.value); setSetupError(''); }} placeholder="設定簡單的密碼" className="w-full px-4 py-2 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 outline-none" />
               </div>
 
-              {setupError && <p className="text-red-500 text-sm font-medium">{setupError}</p>}
+              {setupError && <p className="text-red-500 text-sm font-medium animate-pulse">{setupError}</p>}
 
-              <button onClick={handleEntry} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-indigo-700 transition-all">
+              <button onClick={handleEntry} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold text-lg hover:bg-indigo-700 transition-all shadow-lg">
                 {entryMode === 'signup' ? '立即加入' : '確認登入'}
               </button>
 
@@ -377,16 +383,14 @@
                 <span className="font-bold text-lg text-gray-800">任務集點大挑戰</span>
               </div>
               <div className="flex items-center space-x-3">
-                {/* 顯示個人狀態 - 僅在非管理模式顯示 */}
                 {profile && !isAdmin && (
                   <div className="flex items-center space-x-2 bg-indigo-50 px-3 py-1 rounded-full">
                     <span className="text-xl">{profile.avatar}</span>
                     <span className="font-medium text-indigo-900 text-sm hidden sm:block">{profile.name}</span>
-                    <button onClick={handleLogout} title="登出並換帳號" className="p-1 text-gray-400 hover:text-red-500"><LogOutIcon className="w-4 h-4" /></button>
+                    <button onClick={handleLogout} title="登出帳號" className="p-1 text-gray-400 hover:text-red-500"><LogOutIcon className="w-4 h-4" /></button>
                   </div>
                 )}
                 
-                {/* 後台與返回按鈕 */}
                 {isAdmin ? (
                   <button 
                     onClick={() => setIsAdmin(false)} 
@@ -412,7 +416,7 @@
                     <div className="text-5xl">{profile.avatar}</div>
                     <div>
                       <h2 className="text-2xl font-bold">{profile.name}</h2>
-                      <p className="text-indigo-100">繼續加油！累積集點與戰績吧！</p>
+                      <p className="text-indigo-100 italic">加油！正在持續挑戰中...</p>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
@@ -434,11 +438,11 @@
 
                 <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                   <div className="px-6 py-4 border-b bg-gray-50 flex items-center justify-between">
-                    <h3 className="font-bold flex items-center"><AwardIcon className="w-5 h-5 text-indigo-500 mr-2" />排行榜</h3>
-                    <span className="text-xs text-gray-400">🐾 蓋印章代表任務點數</span>
+                    <h3 className="font-bold flex items-center"><AwardIcon className="w-5 h-5 text-indigo-500 mr-2" />即時排行</h3>
+                    <span className="text-xs text-gray-400">🐾 印章數越多排越前面</span>
                   </div>
                   <div className="p-6 space-y-6">
-                    {allUsers.length === 0 ? <p className="text-center text-gray-400 py-8">目前尚無參與者</p> : 
+                    {allUsers.length === 0 ? <p className="text-center text-gray-400 py-8 italic">目前尚無挑戰者加入</p> : 
                       allUsers.map((user, idx) => {
                         const highest = Math.max(...allUsers.map(u => u.score || 0), 10);
                         const width = Math.min(((user.score || 0) / highest) * 100, 100);
@@ -468,17 +472,17 @@
               <div className="space-y-4">
                 <button 
                   onClick={() => setIsAdmin(false)}
-                  className="mb-2 flex items-center text-indigo-600 font-bold hover:text-indigo-800"
+                  className="mb-2 flex items-center text-indigo-600 font-bold hover:text-indigo-800 transition-all"
                 >
                   <ChevronLeftIcon className="w-5 h-5 mr-1" />
                   返回參與者排行榜
                 </button>
                 <div className="bg-white rounded-2xl shadow-sm overflow-hidden border">
-                  <div className="p-6 bg-indigo-50 border-b font-bold text-indigo-900 flex justify-between">
+                  <div className="p-6 bg-indigo-50 border-b font-bold text-indigo-900 flex justify-between items-center">
                     <span>管理員控制台</span>
-                    <span>總參與人數: {allUsers.length}</span>
+                    <span className="text-xs bg-white px-2 py-1 rounded-full border">總人數: {allUsers.length}</span>
                   </div>
-                  <div className="divide-y">
+                  <div className="divide-y divide-gray-100">
                     {allUsers.map(user => (
                       <AdminUserRow 
                         key={user.id} 
@@ -496,27 +500,17 @@
           {/* 刪除確認視窗 */}
           {deletingUser && (
             <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center animate-in fade-in zoom-in duration-200">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
                 <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
                   <TrashIcon width="32" height="32" />
                 </div>
                 <h3 className="text-xl font-bold text-gray-800 mb-2">確定要刪除嗎？</h3>
-                <p className="text-gray-500 mb-6">
-                  您即將刪除 <span className="font-bold text-red-600">{deletingUser.avatar} {deletingUser.name}</span>。此動作無法復原。
+                <p className="text-gray-500 mb-6 leading-relaxed">
+                  您即將刪除 <span className="font-bold text-red-600">{deletingUser.avatar} {deletingUser.name}</span>。<br/>此動作無法復原，該帳號將會完全消失。
                 </p>
                 <div className="grid grid-cols-2 gap-3">
-                  <button 
-                    onClick={() => setDeletingUser(null)}
-                    className="py-3 px-4 bg-gray-100 text-gray-600 rounded-xl font-bold hover:bg-gray-200 transition-colors"
-                  >
-                    取消
-                  </button>
-                  <button 
-                    onClick={handleDeleteConfirm}
-                    className="py-3 px-4 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-colors"
-                  >
-                    確定刪除
-                  </button>
+                  <button onClick={() => setDeletingUser(null)} className="py-3 px-4 bg-gray-100 text-gray-600 rounded-xl font-bold hover:bg-gray-200 transition-colors">取消</button>
+                  <button onClick={handleDeleteConfirm} className="py-3 px-4 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-colors shadow-lg">確定刪除</button>
                 </div>
               </div>
             </div>
@@ -525,13 +519,13 @@
           {showAdminModal && (
             <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6">
-                <div className="flex justify-between mb-4">
-                  <h3 className="font-bold">管理員登入</h3>
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-gray-800">管理員權限驗證</h3>
                   <button onClick={() => setShowAdminModal(false)}><XIcon className="w-5 h-5 text-gray-400" /></button>
                 </div>
-                <input type="password" value={adminPwdInput} onChange={(e) => setAdminPwdInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()} className="w-full px-4 py-2 border rounded-lg mb-4" placeholder="輸入管理密碼" autoFocus />
-                {adminError && <p className="text-red-500 text-sm mb-4">{adminError}</p>}
-                <button onClick={handleAdminLogin} className="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold">登入後台</button>
+                <input type="password" value={adminPwdInput} onChange={(e) => setAdminPwdInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()} className="w-full px-4 py-2 border rounded-xl mb-4 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="輸入管理密碼" autoFocus />
+                {adminError && <p className="text-red-500 text-sm mb-4 font-medium">{adminError}</p>}
+                <button onClick={handleAdminLogin} className="w-full bg-indigo-600 text-white py-2 rounded-xl font-bold shadow-md hover:bg-indigo-700">登入後台</button>
               </div>
             </div>
           )}
